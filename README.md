@@ -1,7 +1,7 @@
 # helm-values-differ
 
 [![ci](https://github.com/moveeeax/helm-values-differ/actions/workflows/ci.yml/badge.svg)](https://github.com/moveeeax/helm-values-differ/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/badge/go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Render a Helm chart with two different value sets and diff the **resulting Kubernetes manifests** — object by object, field by field — instead of the raw `values.yaml`.
