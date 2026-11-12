@@ -21,6 +21,8 @@ type FieldChange struct {
 	Kind ChangeKind  `json:"kind"`
 	From interface{} `json:"from,omitempty"`
 	To   interface{} `json:"to,omitempty"`
+	// Redacted is set when From/To were hidden by Result.Redact.
+	Redacted bool `json:"redacted,omitempty"`
 }
 
 // ObjectDiff is the set of changes for one Kubernetes object.
@@ -28,6 +30,9 @@ type ObjectDiff struct {
 	Object string        `json:"object"`
 	Kind   ChangeKind    `json:"kind"`
 	Fields []FieldChange `json:"fields,omitempty"`
+
+	// resource is the object's Kubernetes kind (e.g. "Secret"), used by Redact.
+	resource string
 }
 
 // Result is the full diff between a base and a candidate render.
@@ -58,7 +63,7 @@ func Objects(base, candidate []Object) *Result {
 		fields := diffValue("", b.Data, cand.Data)
 		if len(fields) > 0 {
 			sortFields(fields)
-			res.Diffs = append(res.Diffs, ObjectDiff{Object: cand.String(), Kind: Changed, Fields: fields})
+			res.Diffs = append(res.Diffs, ObjectDiff{Object: cand.String(), Kind: Changed, Fields: fields, resource: cand.Kind})
 		}
 	}
 	// Removed: in base, not in candidate.

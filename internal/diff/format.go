@@ -83,6 +83,9 @@ func (r *Result) WriteJSON(w io.Writer) error {
 }
 
 func fieldLine(f FieldChange) string {
+	if f.Redacted {
+		return fmt.Sprintf("%s: (%s)", f.Path, f.Kind)
+	}
 	switch f.Kind {
 	case Added:
 		return fmt.Sprintf("%s: <none> → %v", f.Path, f.To)

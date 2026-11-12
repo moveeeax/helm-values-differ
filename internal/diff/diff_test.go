@@ -3,6 +3,7 @@ package diff
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -232,5 +233,150 @@ func TestMalformedYAMLErrors(t *testing.T) {
 	_, err := Parse([]byte("kind: [unterminated\n"))
 	if err == nil {
 		t.Fatal("expected a parse error for malformed YAML")
+	}
+}
+
+func secretDiff(t *testing.T, base, cand string) *Result {
+	t.Helper()
+	b, err := Parse([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := Parse([]byte(cand))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Objects(b, c)
+}
+
+const secretHead = "apiVersion: v1\nkind: Secret\nmetadata:\n  name: db\n  namespace: default\n"
+
+func TestSecretValuesRedactedByDefault(t *testing.T) {
+	base := secretHead + "data:\n  password: YWJj\n  user: YWRtaW4=\nstringData:\n  token: old-token\n"
+	cand := secretHead + "data:\n  password: eHl6\n  user: YWRtaW4=\n  extra: bmV3\nstringData:\n  token: new-token\n"
+	res := secretDiff(t, base, cand)
+	res.Redact(RedactOptions{})
+
+	var txt, md, js bytes.Buffer
+	if err := res.WriteText(&txt); err != nil {
+		t.Fatal(err)
+	}
+	if err := res.WriteMarkdown(&md); err != nil {
+		t.Fatal(err)
+	}
+	if err := res.WriteJSON(&js); err != nil {
+		t.Fatal(err)
+	}
+	for name, out := range map[string]string{"text": txt.String(), "markdown": md.String(), "json": js.String()} {
+		for _, secret := range []string{"YWJj", "eHl6", "bmV3", "old-token", "new-token"} {
+			if strings.Contains(out, secret) {
+				t.Fatalf("%s output leaks %q:\n%s", name, secret, out)
+			}
+		}
+	}
+	for _, want := range []string{"data.extra: (added)", "data.password: (changed)", "stringData.token: (changed)"} {
+		if !strings.Contains(txt.String(), want) {
+			t.Fatalf("text missing %q:\n%s", want, txt.String())
+		}
+	}
+	if strings.Contains(txt.String(), "data.user") {
+		t.Fatalf("unchanged key reported:\n%s", txt.String())
+	}
+	if !strings.Contains(js.String(), `"redacted": true`) {
+		t.Fatalf("json missing redacted marker:\n%s", js.String())
+	}
+}
+
+func TestSecretWholeDataMapExpandsToKeys(t *testing.T) {
+	base := secretHead
+	cand := secretHead + "stringData:\n  b: two\n  a: one\n"
+	res := secretDiff(t, base, cand)
+	res.Redact(RedactOptions{})
+	f := res.Diffs[0].Fields
+	if len(f) != 2 || f[0].Path != "stringData.a" || f[1].Path != "stringData.b" {
+		t.Fatalf("want per-key entries stringData.a, stringData.b; got %+v", f)
+	}
+	for _, fc := range f {
+		if !fc.Redacted || fc.Kind != Added || fc.To != nil {
+			t.Fatalf("want redacted added entry without value, got %+v", fc)
+		}
+	}
+
+	// And the reverse: the whole map removed.
+	res = secretDiff(t, cand, base)
+	res.Redact(RedactOptions{})
+	var txt bytes.Buffer
+	_ = res.WriteText(&txt)
+	if !strings.Contains(txt.String(), "stringData.a: (removed)") || strings.Contains(txt.String(), "one") {
+		t.Fatalf("removed map not redacted per key:\n%s", txt.String())
+	}
+}
+
+func TestSecretMetadataNotRedacted(t *testing.T) {
+	base := secretHead + "type: Opaque\ndata:\n  k: YQ==\n"
+	cand := strings.Replace(secretHead, "name: db", "name: db\n  labels:\n    tier: backend", 1) + "type: Opaque\ndata:\n  k: YQ==\n"
+	res := secretDiff(t, base, cand)
+	res.Redact(RedactOptions{})
+	var txt bytes.Buffer
+	_ = res.WriteText(&txt)
+	if !strings.Contains(txt.String(), "metadata.labels: <none> → map[tier:backend]") {
+		t.Fatalf("non-data Secret field should keep its value:\n%s", txt.String())
+	}
+}
+
+func TestShowSecretsDisablesRedaction(t *testing.T) {
+	base := secretHead + "data:\n  password: YWJj\n"
+	cand := secretHead + "data:\n  password: eHl6\n"
+	res := secretDiff(t, base, cand)
+	res.Redact(RedactOptions{ShowSecrets: true})
+	var txt bytes.Buffer
+	_ = res.WriteText(&txt)
+	if !strings.Contains(txt.String(), "data.password: YWJj → eHl6") {
+		t.Fatalf("--show-secrets should print values:\n%s", txt.String())
+	}
+}
+
+func TestConfigMapDataNotRedacted(t *testing.T) {
+	base := "kind: ConfigMap\nmetadata:\n  name: c\ndata:\n  mode: a\n"
+	cand := "kind: ConfigMap\nmetadata:\n  name: c\ndata:\n  mode: b\n"
+	res := secretDiff(t, base, cand)
+	res.Redact(RedactOptions{})
+	if f := res.Diffs[0].Fields[0]; f.Redacted || f.To != "b" {
+		t.Fatalf("ConfigMap data must not be redacted, got %+v", f)
+	}
+}
+
+func TestMaskByPathAndValue(t *testing.T) {
+	base := "kind: Deployment\nmetadata:\n  name: web\nspec:\n  apiKey: AKIAOLD\n  token: t1\n  replicas: 2\n"
+	cand := "kind: Deployment\nmetadata:\n  name: web\nspec:\n  apiKey: plain\n  token: t2\n  replicas: 3\n"
+	res := secretDiff(t, base, cand)
+	res.Redact(RedactOptions{Masks: []*regexp.Regexp{
+		regexp.MustCompile(`\.token$`), // by path
+		regexp.MustCompile(`^AKIA`),    // by value: matches the base side only
+	}})
+	var txt bytes.Buffer
+	_ = res.WriteText(&txt)
+	out := txt.String()
+	for _, leak := range []string{"AKIAOLD", "plain", "t1", "t2"} {
+		if strings.Contains(out, leak) {
+			t.Fatalf("mask leaked %q:\n%s", leak, out)
+		}
+	}
+	for _, want := range []string{"spec.apiKey: (changed)", "spec.token: (changed)", "spec.replicas: 2 → 3"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestMaskAppliesWithShowSecrets(t *testing.T) {
+	base := secretHead + "data:\n  password: YWJj\n  user: YQ==\n"
+	cand := secretHead + "data:\n  password: eHl6\n  user: Yg==\n"
+	res := secretDiff(t, base, cand)
+	res.Redact(RedactOptions{ShowSecrets: true, Masks: []*regexp.Regexp{regexp.MustCompile(`password`)}})
+	var txt bytes.Buffer
+	_ = res.WriteText(&txt)
+	if !strings.Contains(txt.String(), "data.password: (changed)") || !strings.Contains(txt.String(), "data.user: YQ== → Yg==") {
+		t.Fatalf("unexpected output:\n%s", txt.String())
 	}
 }
