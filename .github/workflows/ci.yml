@@ -53,3 +53,16 @@ jobs:
           echo "$out"
           echo "$out" | grep -q 'spec.replicas: 2 → 3' || { echo "missing expected diff"; exit 1; }
           echo "$out" | grep -q '1 changed, 0 added, 0 removed' || { echo "unexpected extra changes"; exit 1; }
+      - name: real helm render diff (Secret value redacted)
+        run: |
+          out="$(go run ./cmd/helm-values-differ examples/demo-chart \
+            --base examples/base.yaml --candidate examples/candidate-secret.yaml \
+            --format markdown || true)"
+          echo "$out"
+          echo "$out" | grep -q 'stringData.password: (changed)' || { echo "missing redacted change"; exit 1; }
+          if echo "$out" | grep -q -e 'changeme' -e 'rotated-s3cret'; then echo "secret value leaked"; exit 1; fi
+          out="$(go run ./cmd/helm-values-differ examples/demo-chart \
+            --base examples/base.yaml --candidate examples/candidate-secret.yaml \
+            --show-secrets || true)"
+          echo "$out"
+          echo "$out" | grep -q 'stringData.password: changeme → rotated-s3cret' || { echo "--show-secrets did not print values"; exit 1; }

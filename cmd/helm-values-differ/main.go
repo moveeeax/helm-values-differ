@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 
 	"github.com/moveeeax/helm-values-differ/internal/diff"
 )
@@ -37,8 +38,11 @@ func run(args []string, stdout, stderr *os.File) int {
 	fs.Var(&candVals, "candidate", "value file for the CANDIDATE render (repeatable)")
 	format := fs.String("format", "text", "output format: text | markdown | json")
 	helmBin := fs.String("helm", "helm", "path to the helm binary")
+	showSecrets := fs.Bool("show-secrets", false, "print Secret data/stringData values instead of redacting them")
+	var masks multiFlag
+	fs.Var(&masks, "mask", "hide values of fields whose path or value matches this regular expression (repeatable)")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "usage: helm-values-differ CHART --base base.yaml --candidate candidate.yaml [--format text|markdown|json]\n\n")
+		fmt.Fprintf(stderr, "usage: helm-values-differ CHART --base base.yaml --candidate candidate.yaml [--format text|markdown|json] [--show-secrets] [--mask REGEX]\n\n")
 		fmt.Fprintf(stderr, "Renders CHART twice with helm template and diffs the resulting manifests.\n\n")
 		fs.PrintDefaults()
 	}
@@ -65,11 +69,22 @@ func run(args []string, stdout, stderr *os.File) int {
 		return 2
 	}
 
+	opts := diff.RedactOptions{ShowSecrets: *showSecrets}
+	for _, m := range masks {
+		re, err := regexp.Compile(m)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: invalid --mask %q: %v\n", m, err)
+			return 2
+		}
+		opts.Masks = append(opts.Masks, re)
+	}
+
 	res, err := diff.RenderAndDiff(diff.HelmCLI{Bin: *helmBin}, chart, baseVals, candVals)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
 	}
+	res.Redact(opts)
 
 	var werr error
 	switch *format {
@@ -117,7 +132,7 @@ func splitChart(args []string) (string, []string) {
 // isValueFlag reports whether flag consumes a following space-separated value.
 func isValueFlag(flag string) bool {
 	switch flag {
-	case "-base", "--base", "-candidate", "--candidate", "-format", "--format", "-helm", "--helm":
+	case "-base", "--base", "-candidate", "--candidate", "-format", "--format", "-helm", "--helm", "-mask", "--mask":
 		return true
 	}
 	return false

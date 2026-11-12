@@ -50,15 +50,40 @@ Requires the `helm` binary on `PATH` (v3 or v4). Point at a different binary wit
 ## Usage
 
 ```
-usage: helm-values-differ CHART --base base.yaml --candidate candidate.yaml [--format text|markdown|json]
+usage: helm-values-differ CHART --base base.yaml --candidate candidate.yaml [--format text|markdown|json] [--show-secrets] [--mask REGEX]
 
-  --base       value file for the BASE render (repeatable)
-  --candidate  value file for the CANDIDATE render (repeatable)
-  --format     text (default) | markdown | json
-  --helm       path to the helm binary (default "helm")
+  --base          value file for the BASE render (repeatable)
+  --candidate     value file for the CANDIDATE render (repeatable)
+  --format        text (default) | markdown | json
+  --helm          path to the helm binary (default "helm")
+  --show-secrets  print Secret data/stringData values instead of redacting them
+  --mask          hide values of fields whose path or value matches REGEX (repeatable)
 ```
 
 `--base` and `--candidate` are repeatable — pass several value files per side and they layer in order, exactly like `helm template -f a.yaml -f b.yaml`.
+
+### Secrets and masking
+
+Values under `data` and `stringData` of every `kind: Secret` are redacted by default in all formats. The output still names the keys that changed, so a reviewer sees what moved without the value:
+
+```
+$ helm-values-differ ./examples/demo-chart --base examples/base.yaml --candidate examples/candidate-secret.yaml
+~ Secret default/release-name-db
+    stringData.password: (changed)
+
+1 changed, 0 added, 0 removed
+```
+
+Keys are reported as `(changed)`, `(added)` or `(removed)`. If a whole `data` or `stringData` block appears or disappears, each key in it gets its own line. Other Secret fields (`type`, labels, annotations) keep their values. The comparison runs on the real values before redaction, so redaction never hides or adds a change. In `--format json` a redacted field has `"redacted": true` and no `from`/`to`.
+
+`--show-secrets` turns Secret redaction off, for local runs where the output does not leave your terminal.
+
+`--mask REGEX` hides other values, in any object kind. A field is masked when the expression matches its path (`spec.template.spec.containers[0].env[2].value`) or the value on either side; both sides are hidden together so one cannot be read next to the other. Repeat the flag for several expressions. Syntax is Go [RE2](https://github.com/google/re2/wiki/Syntax). Masks also apply when `--show-secrets` is set.
+
+```sh
+helm-values-differ ./chart --base base.yaml --candidate candidate.yaml \
+  --mask '\.env\[\d+\]\.value$' --mask '^AKIA'
+```
 
 ### Markdown for PR comments
 
